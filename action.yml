@@ -1,0 +1,249 @@
+name: "BakeFoundry SAST Scan (CodeQL)"
+description: "Composite action to run CodeQL SAST analysis and post findings as a PR comment"
+
+inputs:
+  languages:
+    description: >
+      Comma-separated list of languages to scan (required).
+      Supported: javascript, python, java, cpp, csharp, go, ruby, swift
+    required: true
+  build-mode:
+    description: "Build mode for compiled languages, default: autobuild or manual (user provided build info)"
+    required: false
+    default: "autobuild"
+  build-command:
+    description: "Build command for compiled languages (required when build-mode is manual)"
+    required: false
+    default: ""
+  severity-threshold:
+    description: "Minimum severity to fail the build: critical, high, medium, low, note"
+    required: false
+    default: "high"
+  github-token:
+    description: "GitHub token for posting PR comments and uploading SARIF results"
+    required: true
+
+outputs:
+  sarif-file:
+    description: "Path to the generated SARIF results file"
+    value: ${{ steps.set-output.outputs.sarif-file }}
+  findings-count:
+    description: "Number of security findings discovered"
+    value: ${{ steps.parse-results.outputs.findings-count }}
+
+runs:
+  using: "composite"
+  steps:
+    # ─────────────────────────────────────────────
+    # STEP 1: Initialize CodeQL
+    # ─────────────────────────────────────────────
+    - name: "⚙️ Initialize CodeQL"
+      uses: github/codeql-action/init@v4
+      with:
+        languages: ${{ inputs.languages }}
+        # Use the security-extended query suite for broader coverage
+        queries: security-extended
+        # build-mode controls how CodeQL traces compiled languages
+        build-mode: ${{ inputs.build-mode }}
+        config: |
+          paths-ignore:
+            - "**/*.test.*"
+            - "**/*.spec.*"
+            - "**/node_modules/**"
+            - "**/vendor/**"
+            - "**/test/**"
+            - "**/tests/**"
+            - "**/__tests__/**"
+            - "**/dist/**"
+            - "**/build/**"
+
+    # ─────────────────────────────────────────────
+    # STEP 2: Auto-build (only when build-mode is autobuild)
+    #   Skipped when build-mode=manual — caller is expected
+    #   to have already run their own build steps before
+    #   invoking this action.
+    # ─────────────────────────────────────────────
+    - name: "🔨 Auto-Build (Compiled Languages)"
+      if: inputs.build-mode == 'autobuild'
+      uses: github/codeql-action/autobuild@v4
+
+    - name: "🔨 Manual Build (Compiled Languages)"
+      if: inputs.build-mode == 'manual'
+      shell: bash
+      run: ${{ inputs.build-command }}
+
+    # ─────────────────────────────────────────────
+    # STEP 3: Run CodeQL Analysis
+    # ─────────────────────────────────────────────
+    - name: "🔬 Run CodeQL Analysis"
+      id: codeql-analysis
+      uses: github/codeql-action/analyze@v4
+      with:
+        category: "/language:${{ inputs.languages }}"
+        output: sarif-results
+        upload: false   # We upload manually after parsing
+
+    # ─────────────────────────────────────────────
+    # STEP 4: Parse SARIF results and count findings
+    # ─────────────────────────────────────────────
+    - name: "📊 Parse SARIF Results"
+      id: parse-results
+      shell: bash
+      run: |
+        SARIF_FILE=$(find sarif-results -name "*.sarif" | head -1)
+        echo "sarif-file=$SARIF_FILE" >> "$GITHUB_OUTPUT"
+
+        if [ -z "$SARIF_FILE" ] || [ ! -f "$SARIF_FILE" ]; then
+          echo "⚠️ No SARIF file found. Analysis may have found nothing, or build failed."
+          echo "findings-count=0" >> "$GITHUB_OUTPUT"
+          echo "critical-count=0" >> "$GITHUB_OUTPUT"
+          echo "high-count=0" >> "$GITHUB_OUTPUT"
+          echo "medium-count=0" >> "$GITHUB_OUTPUT"
+          echo "low-count=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "📄 Parsing SARIF file: $SARIF_FILE"
+
+        # Count findings by severity
+        CRITICAL=$(jq '[.runs[].results[]
+          | select(.properties.problem.severity == "error"
+            and (.rule.properties["problem.severity"] // "" | test("critical"; "i")))
+          ] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+
+        HIGH=$(jq '[.runs[].results[]
+          | select(.level == "error")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+
+        MEDIUM=$(jq '[.runs[].results[]
+          | select(.level == "warning")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+
+        LOW=$(jq '[.runs[].results[]
+          | select(.level == "note")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+
+        TOTAL=$(jq '[.runs[].results[]] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+
+        echo "critical-count=$CRITICAL" >> "$GITHUB_OUTPUT"
+        echo "high-count=$HIGH" >> "$GITHUB_OUTPUT"
+        echo "medium-count=$MEDIUM" >> "$GITHUB_OUTPUT"
+        echo "low-count=$LOW" >> "$GITHUB_OUTPUT"
+        echo "findings-count=$TOTAL" >> "$GITHUB_OUTPUT"
+
+        echo "📈 Findings Summary:"
+        echo "  🔴 High   : $HIGH"
+        echo "  🟠 Medium : $MEDIUM"
+        echo "  🟡 Low    : $LOW"
+        echo "  📦 Total  : $TOTAL"
+
+    # ─────────────────────────────────────────────
+    # STEP 5: Upload SARIF to GitHub Security tab
+    # ─────────────────────────────────────────────
+    - name: "📤 Upload SARIF to GitHub Security"
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: sarif-results
+        category: "codeql-sast"
+
+    # ─────────────────────────────────────────────
+    # STEP 6: Post PR Comment with findings summary
+    # ─────────────────────────────────────────────
+    - name: "💬 Post PR Comment"
+      if: github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        TOTAL: ${{ steps.parse-results.outputs.findings-count }}
+        HIGH: ${{ steps.parse-results.outputs.high-count }}
+        MEDIUM: ${{ steps.parse-results.outputs.medium-count }}
+        LOW: ${{ steps.parse-results.outputs.low-count }}
+        LANGS: ${{ inputs.languages }}
+      run: |
+        PR_NUMBER="${{ github.event.pull_request.number }}"
+        REPO="${{ github.repository }}"
+        RUN_URL="https://github.com/$REPO/actions/runs/${{ github.run_id }}"
+        SECURITY_URL="https://github.com/$REPO/security/code-scanning"
+
+        if [ "$TOTAL" -eq 0 ]; then
+          ICON="✅"
+          STATUS_LINE="**No security vulnerabilities found!** Your code looks clean. 🎉"
+        elif [ "$HIGH" -gt 0 ]; then
+          ICON="🔴"
+          STATUS_LINE="**Action Required:** High-severity vulnerabilities detected."
+        else
+          ICON="🟠"
+          STATUS_LINE="**Review Recommended:** Medium/low severity findings detected."
+        fi
+
+        COMMENT_BODY=$(cat <<EOF
+        ## $ICON CodeQL SAST Scan Results
+
+        $STATUS_LINE
+
+        | Severity | Count |
+        |----------|-------|
+        | 🔴 High | $HIGH |
+        | 🟠 Medium | $MEDIUM |
+        | 🟡 Low | $LOW |
+        | **Total** | **$TOTAL** |
+
+        **Languages Scanned:** \`$LANGS\`
+        **Query Suite:** \`security-extended\`
+
+        > 📋 **Full Details:** [View in GitHub Security Tab]($SECURITY_URL) | [View Workflow Run]($RUN_URL)
+        >
+        > 💡 CodeQL checks for SQL injection, XSS, path traversal, command injection, and 250+ more vulnerability types.
+        EOF
+        )
+
+        # Post or update existing comment
+        EXISTING_COMMENT_ID=$(gh api \
+          "/repos/$REPO/issues/$PR_NUMBER/comments" \
+          --jq '.[] | select(.body | contains("CodeQL SAST Scan Results")) | .id' \
+          2>/dev/null | head -1)
+
+        if [ -n "$EXISTING_COMMENT_ID" ]; then
+          gh api --method PATCH \
+            "/repos/$REPO/issues/comments/$EXISTING_COMMENT_ID" \
+            --field body="$COMMENT_BODY" > /dev/null
+          echo "✅ Updated existing SAST comment #$EXISTING_COMMENT_ID"
+        else
+          gh api --method POST \
+            "/repos/$REPO/issues/$PR_NUMBER/comments" \
+            --field body="$COMMENT_BODY" > /dev/null
+          echo "✅ Posted new SAST comment on PR #$PR_NUMBER"
+        fi
+
+    # ─────────────────────────────────────────────
+    # STEP 7: Fail build if threshold exceeded
+    # ─────────────────────────────────────────────
+    - name: "🚦 Quality Gate"
+      shell: bash
+      run: |
+        THRESHOLD="${{ inputs.severity-threshold }}"
+        HIGH="${{ steps.parse-results.outputs.high-count }}"
+        MEDIUM="${{ steps.parse-results.outputs.medium-count }}"
+        LOW="${{ steps.parse-results.outputs.low-count }}"
+        TOTAL="${{ steps.parse-results.outputs.findings-count }}"
+
+        echo "🔒 Severity Threshold: $THRESHOLD"
+        echo "📊 Findings — High: $HIGH | Medium: $MEDIUM | Low: $LOW"
+
+        FAIL=0
+
+        case "$THRESHOLD" in
+          critical|high)
+            [ "$HIGH" -gt 0 ] && FAIL=1 ;;
+          medium)
+            [ "$HIGH" -gt 0 ] || [ "$MEDIUM" -gt 0 ] && FAIL=1 ;;
+          low|note)
+            [ "$TOTAL" -gt 0 ] && FAIL=1 ;;
+        esac
+
+        if [ "$FAIL" -eq 1 ]; then
+          echo ""
+          echo "❌ QUALITY GATE FAILED: Findings exceed the '$THRESHOLD' severity threshold."
+          echo "   Please review the GitHub Security tab or the PR comment for details."
+          echo "   Security Tab: https://github.com/${{ github.repository }}/security/code-scanning"
+          exit 1
+        else
+          echo "✅ QUALITY GATE PASSED: No findings at or above '$THRESHOLD' severity."
+        fi
