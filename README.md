@@ -197,13 +197,15 @@ jobs:
 |---|---|---|---|
 | `github-token` | ✅ Yes | — | GitHub token for SARIF upload and PR comments |
 | `languages` | ✅ Yes | — | Comma-separated list of languages to scan (e.g. `python,javascript`) |
-| `build-mode` | ❌ No | `autobuild` | Build mode for compiled languages: `autobuild` (default) or `manual` |
+| `build-mode` | ❌ No | `none` | `none` for interpreted languages (Python, JS, Ruby) · `autobuild` for compiled (Java, C#, C++, Go) · `manual` for custom build |
 | `build-command` | ❌ No | `""` | Build command to run when `build-mode` is `manual` (e.g. `mvn package`) |
 | `severity-threshold` | ❌ No | `high` | Minimum severity to fail the build (`critical`, `high`, `medium`, `low`, `note`) |
 
-> **`build-mode` notes:**
-> - `autobuild` — CodeQL automatically detects and builds your project (works for most cases)
-> - `manual` — You provide a custom `build-command`; use this when autobuild fails for complex build systems
+> **`build-mode` quick guide:**
+> | Language | `build-mode` to use |
+> |---|---|
+> | Python, JavaScript, TypeScript, Ruby | `none` *(default — no action needed)* |
+> | Java, C#, C++, Go, Swift | `autobuild` or `manual` |
 
 ## 📤 Outputs
 

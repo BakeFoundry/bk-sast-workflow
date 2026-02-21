@@ -8,9 +8,13 @@ inputs:
       Supported: javascript, python, java, cpp, csharp, go, ruby, swift
     required: true
   build-mode:
-    description: "Build mode for compiled languages, default: autobuild or manual (user provided build info)"
+    description: |
+      Build mode for CodeQL analysis.
+      - none     : for interpreted languages (Python, JavaScript, Ruby) — DEFAULT
+      - autobuild: for compiled languages (Java, C#, C++, Go) — CodeQL auto-detects build
+      - manual   : for compiled languages with a custom build command (set build-command too)
     required: false
-    default: "autobuild"
+    default: "none"
   build-command:
     description: "Build command for compiled languages (required when build-mode is manual)"
     required: false
@@ -64,11 +68,11 @@ runs:
     #   invoking this action.
     # ─────────────────────────────────────────────
     - name: "🔨 Auto-Build (Compiled Languages)"
-      if: inputs.build-mode == 'autobuild'
+      if: ${{ inputs.build-mode == 'autobuild' }}
       uses: github/codeql-action/autobuild@v4
 
     - name: "🔨 Manual Build (Compiled Languages)"
-      if: inputs.build-mode == 'manual'
+      if: ${{ inputs.build-mode == 'manual' }}
       shell: bash
       run: ${{ inputs.build-command }}
 
