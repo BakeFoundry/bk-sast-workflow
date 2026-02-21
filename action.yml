@@ -140,9 +140,13 @@ runs:
 
     # ─────────────────────────────────────────────
     # STEP 5: Upload SARIF to GitHub Security tab
+    # Requires security-events: write permission in the caller workflow.
+    # continue-on-error: true so fork PRs (which lack this permission)
+    # still get scan results via PR comment and logs.
     # ─────────────────────────────────────────────
     - name: "📤 Upload SARIF to GitHub Security"
       uses: github/codeql-action/upload-sarif@v4
+      continue-on-error: true
       with:
         sarif_file: sarif-results
         category: "codeql-sast"
