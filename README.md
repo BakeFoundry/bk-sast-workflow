@@ -218,16 +218,50 @@ jobs:
 
 ## 🔐 Required GitHub Permissions
 
-Add these permissions to your workflow job:
+Your **caller workflow job** must explicitly declare these permissions:
 
 ```yaml
 permissions:
-  security-events: write   # Upload SARIF to code scanning
-  contents: read           # Read repository contents
-  pull-requests: write     # Post PR comments
+  security-events: write   # ← Required to upload SARIF to GitHub Security tab
+  contents: read           # ← Required to read repository contents
+  pull-requests: write     # ← Required to post PR comments
+```
+
+> [!IMPORTANT]
+> If `security-events: write` is missing you will see:
+> `Error: Resource not accessible by integration`
+>
+> Add the `permissions` block to the **job** (not just the top-level workflow) that calls this action.
+
+> [!NOTE]
+> **Fork PRs**: GitHub restricts `security-events: write` on PRs from forks for security reasons.
+> This action uses `continue-on-error: true` on the SARIF upload step, so the scan still
+> completes and findings are shown in the PR comment and workflow logs — only the GitHub
+> Security tab upload is skipped for fork PRs.
+
+### Complete Caller Workflow Example
+
+```yaml
+jobs:
+  sast-scan:
+    name: SAST Scan (CodeQL)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # ← must be here
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: BakeFoundry/bk-sast-workflow@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          languages: "python"
 ```
 
 ---
+
 
 ## 📊 What Developers See
 
