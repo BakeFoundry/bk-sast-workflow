@@ -49,17 +49,6 @@ runs:
         queries: security-extended
         # build-mode controls how CodeQL traces compiled languages
         build-mode: ${{ inputs.build-mode }}
-        config: |
-          paths-ignore:
-            - "**/*.test.*"
-            - "**/*.spec.*"
-            - "**/node_modules/**"
-            - "**/vendor/**"
-            - "**/test/**"
-            - "**/tests/**"
-            - "**/__tests__/**"
-            - "**/dist/**"
-            - "**/build/**"
 
     # ─────────────────────────────────────────────
     # STEP 2: Auto-build (only when build-mode is autobuild)
@@ -137,19 +126,6 @@ runs:
         echo "  🟠 Medium : $MEDIUM"
         echo "  🟡 Low    : $LOW"
         echo "  📦 Total  : $TOTAL"
-
-    # ─────────────────────────────────────────────
-    # STEP 5: Upload SARIF to GitHub Security tab
-    # Requires security-events: write permission in the caller workflow.
-    # continue-on-error: true so fork PRs (which lack this permission)
-    # still get scan results via PR comment and logs.
-    # ─────────────────────────────────────────────
-    - name: "📤 Upload SARIF to GitHub Security"
-      uses: github/codeql-action/upload-sarif@v4
-      continue-on-error: true
-      with:
-        sarif_file: sarif-results
-        category: "codeql-sast"
 
     # ─────────────────────────────────────────────
     # STEP 6: Post PR Comment with findings summary
