@@ -34,6 +34,9 @@ outputs:
   findings-count:
     description: "Number of security findings discovered"
     value: ${{ steps.parse-results.outputs.findings-count }}
+  critical-count:
+    description: "Number of critical security findings discovered"
+    value: ${{ steps.parse-results.outputs.critical-count }}
 
 runs:
   using: "composite"
@@ -99,21 +102,19 @@ runs:
         echo "📄 Parsing SARIF file: $SARIF_FILE"
 
         # Count findings by severity
-        CRITICAL=$(jq '[.runs[].results[]
-          | select(.properties.problem.severity == "error"
-            and (.rule.properties["problem.severity"] // "" | test("critical"; "i")))
-          ] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+        # 1. Critical: level == error and severity matches "critical"
+        CRITICAL=$(jq '[.runs[].results[] | select(.level == "error" and (.rule.properties["problem.severity"] // "" | test("critical"; "i")))] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
 
-        HIGH=$(jq '[.runs[].results[]
-          | select(.level == "error")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+        # 2. High: level == error but not critical
+        HIGH=$(jq "[.runs[].results[] | select(.level == \"error\" and ((.rule.properties[\"problem.severity\"] // \"\") | test(\"critical\"; \"i\") | not))] | length" "$SARIF_FILE" 2>/dev/null || echo 0)
 
-        MEDIUM=$(jq '[.runs[].results[]
-          | select(.level == "warning")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+        # 3. Medium: level == warning
+        MEDIUM=$(jq '[.runs[].results[] | select(.level == "warning")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
 
-        LOW=$(jq '[.runs[].results[]
-          | select(.level == "note")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
-
+        # 4. Low/Other: everything else (note, none, or missing level)
+        # We calculate this as TOTAL - (CRITICAL + HIGH + MEDIUM) to ensure mathematical consistency
         TOTAL=$(jq '[.runs[].results[]] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+        LOW=$((TOTAL - CRITICAL - HIGH - MEDIUM))
 
         echo "critical-count=$CRITICAL" >> "$GITHUB_OUTPUT"
         echo "high-count=$HIGH" >> "$GITHUB_OUTPUT"
@@ -122,10 +123,11 @@ runs:
         echo "findings-count=$TOTAL" >> "$GITHUB_OUTPUT"
 
         echo "📈 Findings Summary:"
-        echo "  🔴 High   : $HIGH"
-        echo "  🟠 Medium : $MEDIUM"
-        echo "  🟡 Low    : $LOW"
-        echo "  📦 Total  : $TOTAL"
+        echo "  🔴 Critical : $CRITICAL"
+        echo "  🔴 High     : $HIGH"
+        echo "  🟠 Medium   : $MEDIUM"
+        echo "  🟡 Low      : $LOW"
+        echo "  📦 Total    : $TOTAL"
 
     # ─────────────────────────────────────────────
     # STEP 6: Post PR Comment with findings summary
@@ -136,6 +138,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         TOTAL: ${{ steps.parse-results.outputs.findings-count }}
+        CRITICAL: ${{ steps.parse-results.outputs.critical-count }}
         HIGH: ${{ steps.parse-results.outputs.high-count }}
         MEDIUM: ${{ steps.parse-results.outputs.medium-count }}
         LOW: ${{ steps.parse-results.outputs.low-count }}
@@ -149,9 +152,9 @@ runs:
         if [ "$TOTAL" -eq 0 ]; then
           ICON="✅"
           STATUS_LINE="**No security vulnerabilities found!** Your code looks clean. 🎉"
-        elif [ "$HIGH" -gt 0 ]; then
+        elif [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
           ICON="🔴"
-          STATUS_LINE="**Action Required:** High-severity vulnerabilities detected."
+          STATUS_LINE="**Action Required:** High or Critical severity vulnerabilities detected."
         else
           ICON="🟠"
           STATUS_LINE="**Review Recommended:** Medium/low severity findings detected."
@@ -164,6 +167,7 @@ runs:
 
         | Severity | Count |
         |----------|-------|
+        | 🔴 **Critical** | **$CRITICAL** |
         | 🔴 High | $HIGH |
         | 🟠 Medium | $MEDIUM |
         | 🟡 Low | $LOW |
@@ -203,21 +207,24 @@ runs:
       shell: bash
       run: |
         THRESHOLD="${{ inputs.severity-threshold }}"
+        CRITICAL="${{ steps.parse-results.outputs.critical-count }}"
         HIGH="${{ steps.parse-results.outputs.high-count }}"
         MEDIUM="${{ steps.parse-results.outputs.medium-count }}"
         LOW="${{ steps.parse-results.outputs.low-count }}"
         TOTAL="${{ steps.parse-results.outputs.findings-count }}"
 
         echo "🔒 Severity Threshold: $THRESHOLD"
-        echo "📊 Findings — High: $HIGH | Medium: $MEDIUM | Low: $LOW"
+        echo "📊 Findings — Critical: $CRITICAL | High: $HIGH | Medium: $MEDIUM | Low: $LOW"
 
         FAIL=0
 
         case "$THRESHOLD" in
-          critical|high)
-            [ "$HIGH" -gt 0 ] && FAIL=1 ;;
+          critical)
+            [ "$CRITICAL" -gt 0 ] && FAIL=1 ;;
+          high)
+            [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] && FAIL=1 ;;
           medium)
-            [ "$HIGH" -gt 0 ] || [ "$MEDIUM" -gt 0 ] && FAIL=1 ;;
+            [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] || [ "$MEDIUM" -gt 0 ] && FAIL=1 ;;
           low|note)
             [ "$TOTAL" -gt 0 ] && FAIL=1 ;;
         esac
